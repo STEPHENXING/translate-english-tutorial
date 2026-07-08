@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+output/
+output-codex/
+_temp_step4/
+_step1_chunks/
+audio_segments/
+*.mp3
+*.mp4
+*.wav
+*.lock
