@@ -32,6 +32,7 @@ SERVER_RESPONSE_PREFIX = "__SC_EXTENSION_RESPONSE__:"
 CFG_VALUE = 2.0
 INFERENCE_TIMESTEPS = 10
 REFERENCE_CLIP_SECONDS = 12.0
+MAX_FULL_REFERENCE_SECONDS = 15.0
 CHINESE_CHAR_RE = re.compile(r"[\u3400-\u9fff]")
 ENGLISH_IN_BRACKETS_RE = re.compile(
     r"[\(（\[\【]\s*[A-Za-z][A-Za-z0-9 .,'’&/\-:;!?]*\s*[\)）\]\】]"
@@ -80,9 +81,24 @@ def sanitize_text_for_tts(text: str) -> str:
 # ============================================================
 # Reference Audio
 # ============================================================
+def get_audio_duration(path: str) -> float | None:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", path],
+            capture_output=True, text=True, check=True,
+        )
+        return float(json.loads(result.stdout)["format"]["duration"])
+    except Exception:
+        return None
+
+
 def prepare_reference_audio(reference_audio: str, reference_wav: str):
     if not os.path.exists(reference_audio):
         raise FileNotFoundError(f"Reference audio not found: {reference_audio}")
+
+    duration = get_audio_duration(reference_audio)
+    use_full_reference = duration is not None and duration <= MAX_FULL_REFERENCE_SECONDS
+    clip_seconds = None if use_full_reference else REFERENCE_CLIP_SECONDS
 
     source_marker = reference_wav + ".source.txt"
     current_source = json.dumps(
@@ -90,7 +106,8 @@ def prepare_reference_audio(reference_audio: str, reference_wav: str):
             "path": os.path.abspath(reference_audio),
             "size": os.path.getsize(reference_audio),
             "mtime": os.path.getmtime(reference_audio),
-            "clip_seconds": REFERENCE_CLIP_SECONDS,
+            "duration": duration,
+            "clip_seconds": clip_seconds,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -107,16 +124,16 @@ def prepare_reference_audio(reference_audio: str, reference_wav: str):
         print(f"[3a] Reference audio exists: {reference_wav}")
         print("[3a] Source marker missing or changed; regenerating normalized reference wav.")
 
-    print(f"[3a] Clipping first {REFERENCE_CLIP_SECONDS:g}s from user-provided reference audio...")
+    if use_full_reference:
+        print(f"[3a] Normalizing full short reference audio ({duration:.1f}s)...")
+    else:
+        print(f"[3a] Clipping first {REFERENCE_CLIP_SECONDS:g}s from user-provided reference audio...")
     os.makedirs(os.path.dirname(reference_wav), exist_ok=True)
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-i", reference_audio,
-            "-t", str(REFERENCE_CLIP_SECONDS),
-            "-ar", "16000", "-ac", "1", reference_wav,
-        ],
-        check=True, capture_output=True,
-    )
+    cmd = ["ffmpeg", "-y", "-i", reference_audio]
+    if clip_seconds is not None:
+        cmd.extend(["-t", str(clip_seconds)])
+    cmd.extend(["-ar", "16000", "-ac", "1", reference_wav])
+    subprocess.run(cmd, check=True, capture_output=True)
     with open(source_marker, "w", encoding="utf-8") as f:
         f.write(current_source)
     print(f"[3a] Saved: {reference_wav}")
